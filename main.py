@@ -10,7 +10,7 @@ import scipy.misc
 
 flags = tf.app.flags
 flags.DEFINE_integer("epoch", 1000, "Epoch to train [25]")
-flags.DEFINE_float("learning_rate", 0.002, "Learning rate of for adam [0.0002]")
+flags.DEFINE_float("learning_rate", 0.0002, "Learning rate of for adam [0.0002]")
 flags.DEFINE_float("beta1", 0.5, "Momentum term of adam [0.5]")
 flags.DEFINE_integer("train_size", np.inf, "The size of train images [np.inf]")
 flags.DEFINE_integer("batch_size", 32, "The size of batch images [64]")
@@ -43,6 +43,7 @@ def main(_):
         else:
             dcgan.load(FLAGS.checkpoint_dir)
             OPTION = 2
+            VAL_OPTION =2
             if OPTION == 1:
                 data = json.load(open("/home/yjyoon/work/IRnormal/data/traininput_material.json"))
                 data_label = json.load(open("/home/yjyoon/work/IRnormal/data/traingt_material.json"))
@@ -56,24 +57,40 @@ def main(_):
             elif OPTION == 2:
                 data = json.load(open("/home/yjyoon/work/IRnormal/data/testinput_material.json"))
                 data_label = json.load(open("/home/yjyoon/work/IRnormal/data/testgt_material.json"))
+            if VAL_OPTION ==1:
+                print("Computing 32 validation set ")
+                shuffle = np.random.permutation(range(len(data)))
+                ir_batch = [get_image(data[shuffle[idx]], 0, 64, 64, is_crop=FLAGS.is_crop) for idx in xrange(FLAGS.batch_size)]
+                normal_batchlabel = [get_image(data_label[shuffle[idx]], 0, 64, 64, is_crop=FLAGS.is_crop) for idx in xrange(FLAGS.batch_size)]
+                eval_batch_images = np.array(ir_batch).astype(np.float32)
+                eval_batchlabel_images = np.array(normal_batchlabel).astype(np.float32)
+                samples = sess.run(dcgan.sampler, feed_dict={dcgan.ir_images: eval_batch_images})
+                h = eval_batch_images.shape[1]
+                w = eval_batch_images.shape[2]
 
-            shuffle = np.random.permutation(range(len(data)))
-            ir_batch = [get_image(data[shuffle[idx]], 0, 64, 64, is_crop=FLAGS.is_crop) for idx in xrange(FLAGS.batch_size)]
-            normal_batchlabel = [get_image(data_label[shuffle[idx]], 0, 64, 64, is_crop=FLAGS.is_crop) for idx in xrange(FLAGS.batch_size)]
-            eval_batch_images = np.array(ir_batch).astype(np.float32)
-            eval_batchlabel_images = np.array(normal_batchlabel).astype(np.float32)
-            samples = sess.run(dcgan.sampler, feed_dict={dcgan.ir_images: eval_batch_images})
-            h = eval_batch_images.shape[1]
-            w = eval_batch_images.shape[2]
-            img = np.zeros((h, w * 2, 3))
-            for idx in xrange(FLAGS.batch_size):
-                predict = samples[idx, :, :, :]
-                gt = eval_batchlabel_images[idx, :, :, :]
-                print('error:', sess.run(tf.reduce_sum(tf.abs(tf.sub(predict, gt)))))
-                img[0:h, 0:w, :] = predict
-                img[0:h, w:2 * w, :] = gt
-                scipy.misc.imshow(img)
+                img = np.zeros((h, w * 2, 3))
+                for idx in xrange(FLAGS.batch_size):
+                    predict = samples[idx, :, :, :]
+                    gt = eval_batchlabel_images[idx, :, :, :]
+                    print('error:', sess.run(tf.reduce_sum(tf.abs(tf.sub(predict, gt)))))
+                    img[0:h, 0:w, :] = predict
+                    img[0:h, w:2 * w, :] = gt
+                    scipy.misc.imshow(img)
+            elif VAL_OPTION ==2:
+                print("Computing all validation set ")
+                ErrG =0.0
+                val_batch_idxs = min(len(data), FLAGS.train_size)/FLAGS.batch_size
+                for idx in xrange(0, val_batch_idxs):
+                    print("[Computing Validation Error %d/%d]" % (idx, val_batch_idxs))
+                    batch_files = range(idx*FLAGS.batch_size,(idx+1)*FLAGS.batch_size)
 
+                    ir_batch = [get_image(data[idx], 0, 64, 64, is_crop=FLAGS.is_crop) for idx in batch_files]
+                    normal_batchlabel = [get_image(data_label[idx], 0, 64, 64, is_crop=FLAGS.is_crop) for idx in batch_files]
+                    eval_batch_images = np.array(ir_batch).astype(np.float32)
+                    eval_batchlabel_images = np.array(normal_batchlabel).astype(np.float32)
+                    samples = sess.run(dcgan.sampler, feed_dict={dcgan.ir_images: eval_batch_images})
+                    ErrG += sess.run(tf.reduce_mean(tf.abs(tf.sub(samples, eval_batchlabel_images))))
+                print("Validation Error:", ErrG/val_batch_idxs)
 
 if __name__ == '__main__':
     tf.app.run()

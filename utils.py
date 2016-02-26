@@ -22,10 +22,10 @@ def get_image_normal(image_path, image_size,randx,randy, is_crop=True):
 def get_image_eval(image_path):
     return transform_eval(imread(image_path))
 
-def save_images(images, size, image_path):
-    return imsave(inverse_transform(inverse_normalize(images)), size, image_path)
 #def save_images(images, size, image_path):
-#    return imsave(inverse_transform(images), size, image_path)
+#    return imsave(inverse_transform(inverse_normalize(images)), size, image_path)
+def save_images(images, size, image_path):
+    return imsave(inverse_transform(images), size, image_path)
 
 def imread(path):
     return scipy.misc.imread(path).astype(np.float)

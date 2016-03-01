@@ -3,12 +3,14 @@ import time
 from glob import glob
 import tensorflow as tf
 
+#from tensorflow.python.ops.script_ops import *
 from ops import *
 from utils import *
+from compute_ei import *
 
 class DCGAN(object):
     def __init__(self, sess, image_size=108, is_crop=True,
-                 batch_size=64, input_size=64, sample_size=32, ir_image_shape=[64, 64, 3], normal_image_shape=[64, 64, 3],
+                 batch_size=32, input_size=64, sample_size=32, ir_image_shape=[64, 64,1], normal_image_shape=[64, 64, 3],
                  y_dim=None, z_dim=100, gf_dim=64, df_dim=64,
                  gfc_dim=1024, dfc_dim=1024, c_dim=3, dataset_name='default',
                  checkpoint_dir=None):
@@ -85,15 +87,14 @@ class DCGAN(object):
                                     name='normal_images')
         self.ir_sample_images= tf.placeholder(tf.float32, [self.sample_size] + self.ir_image_shape,
                                         name='ir_sample_images')
+        self.ei_images = tf.placeholder(tf.float32, [self.batch_size] + self.ir_image_shape,
+                                    name='ei_images')
+
 
         self.G = self.generator(self.ir_images)
         self.D = self.discriminator(self.normal_images) # real image output
-
         self.sampler = self.sampler(self.ir_images)
-
-
         self.D_ = self.discriminator(self.G, reuse=True) #fake image output
-
         self.d_sum = tf.histogram_summary("d", self.D)
         self.d__sum = tf.histogram_summary("d_", self.D_)
         #self.G_sum = tf.image_summary("G", self.G)
@@ -101,14 +102,13 @@ class DCGAN(object):
         self.d_loss_real = binary_cross_entropy_with_logits(tf.ones_like(self.D), self.D)
         self.d_loss_fake = binary_cross_entropy_with_logits(tf.zeros_like(self.D_), self.D_)
         self.L1_loss = tf.reduce_sum(tf.abs(tf.sub(self.G,self.normal_images)))/self.batch_size * self.lambda2
-        self.g_loss = binary_cross_entropy_with_logits(tf.ones_like(self.D_), self.D_)*self.lambda1 + self.L1_loss
-
+        self.EI_loss = tf.py_func(compute_ei,[self.G],[tf.float64])
+        self.EI_loss = tf.to_float(self.EI_loss[0],name='ToFloat')
+        self.g_loss = binary_cross_entropy_with_logits(tf.ones_like(self.D_), self.D_)*self.lambda1 + self.L1_loss + tf.abs(self.EI_loss)
 
         self.d_loss_real_sum = tf.scalar_summary("d_loss_real", self.d_loss_real)
         self.d_loss_fake_sum = tf.scalar_summary("d_loss_fake", self.d_loss_fake)
-
         self.d_loss = self.d_loss_real + self.d_loss_fake
-
         self.g_loss_sum = tf.scalar_summary("g_loss", self.g_loss)
         self.d_loss_sum = tf.scalar_summary("d_loss", self.d_loss)
 
@@ -131,19 +131,18 @@ class DCGAN(object):
         self.saver = tf.train.Saver()
         self.g_sum = tf.merge_summary([self.d__sum,
         self.d_loss_fake_sum, self.g_loss_sum])
-        #self.g_sum = tf.merge_summary([self.d__sum,
-        #self.G_sum, self.d_loss_fake_sum, self.g_loss_sum])
         self.g_sum = tf.merge_summary([self.d__sum,self.d_loss_fake_sum, self.g_loss_sum])
         self.d_sum = tf.merge_summary([self.d_sum, self.d_loss_real_sum, self.d_loss_sum])
         self.writer = tf.train.SummaryWriter("./logs", self.sess.graph_def)
 
         # Evaluation
         self.val_g_sum = tf.merge_summary([self.d__sum, self.d_loss_fake_sum, self.g_loss_sum])
-        #self.val_d_sum = tf.merge_summary([self.d_sum, self.d_loss_real_sum, self.d_loss_sum])
         self.val_writer = tf.train.SummaryWriter("./val_logs", self.sess.graph_def)
 
-        val_data = json.load(open("/home/yjyoon/work/IRnormal/data/testinput_material.json"))
-        val_label = json.load(open("/home/yjyoon/work/IRnormal/data/testgt_material.json"))
+        val_data = json.load(open("/home/yjyoon/work/PycharmProjects/ECCV2016/DCGAN_IR_single/testinput_single.json"))
+        val_label = json.load(open("/home/yjyoon/work/PycharmProjects/ECCV2016/DCGAN_IR_single/testgt_single.json"))
+        val_datalist =[', '.join(val_data[idx]) for idx in xrange(0,len(val_data))]
+        val_labellist =[', '.join(val_label[idx]) for idx in xrange(0,len(val_data))]
 
         counter = 1
         start_time = time.time()
@@ -154,8 +153,14 @@ class DCGAN(object):
             print(" [!] Load failed...")
 
         # loda training and validation dataset path
-        data = json.load(open("/home/yjyoon/work/IRnormal/data/traininput_material.json"))
-        data_label = json.load(open("/home/yjyoon/work/IRnormal/data/traingt_material.json"))
+        data = json.load(open("/home/yjyoon/work/PycharmProjects/ECCV2016/DCGAN_IR_single/traininput_single.json"))
+        data_label = json.load(open("/home/yjyoon/work/PycharmProjects/ECCV2016/DCGAN_IR_single/traingt_single.json"))
+        datalist =[', '.join(data[idx]) for idx in xrange(0,len(data))]
+        labellist =[', '.join(data_label[idx]) for idx in xrange(0,len(data))]
+
+	#print('Load all images')
+	#load_all_images(data,data_label,self.batch_size,config.train_size)	
+
 
         for epoch in xrange(config.epoch):
             # loda training and validation dataset path
@@ -165,11 +170,11 @@ class DCGAN(object):
             randy = np.random.randint(64,224-64)
             for idx in xrange(0, batch_idxs):
                 batch_files = shuffle[idx*config.batch_size:(idx+1)*config.batch_size]
-                ir_batch = [get_image(data[batch_file], self.image_size,randx,randy, is_crop=self.is_crop)
+                ir_batch = [get_image(datalist[batch_file], self.image_size,randx,randy, is_crop=self.is_crop,gray=True)
                             for batch_file in batch_files]
 
-                normal_batchlabel = [get_image(data_label[batch_file], self.image_size,randx,randy,
-                                                      is_crop=self.is_crop) for batch_file in batch_files]
+                normal_batchlabel = [get_image(labellist[batch_file], self.image_size,randx,randy,
+                                                      is_crop=self.is_crop,gray=False) for batch_file in batch_files]
 
                 batch_images = np.array(ir_batch).astype(np.float32)
                 batchlabel_images = np.array(normal_batchlabel).astype(np.float32)
@@ -196,14 +201,14 @@ class DCGAN(object):
                 print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
                     % (epoch, idx, batch_idxs,
                         time.time() - start_time, errD_fake+errD_real, errG))
-                if np.mod(counter, 1000) == 1:
+                if np.mod(counter, batch_idxs) == 1:
                     valrandx = np.random.randint(64,224-64)
                     valrandy = np.random.randint(64,224-64)
                     valshuffle = np.random.permutation(range(len(val_data)))
 
                     batch_files = valshuffle[0:self.sample_size]
-                    ir_batch = [get_image(val_data[batch_file], self.image_size,valrandx,valrandy, is_crop=self.is_crop) for batch_file in batch_files]
-                    normal_batchlabel = [get_image(val_label[batch_file], self.image_size,valrandx,valrandy, is_crop=self.is_crop) \
+                    ir_batch = [get_image(val_datalist[batch_file], self.image_size,valrandx,valrandy, is_crop=self.is_crop) for batch_file in batch_files]
+                    normal_batchlabel = [get_image(val_labellist[batch_file], self.image_size,valrandx,valrandy, is_crop=self.is_crop) \
                              for batch_file in batch_files]
 
                     val_batch_images = np.array(ir_batch).astype(np.float32)
@@ -250,11 +255,6 @@ class DCGAN(object):
 
     def generator(self, real_image, y=None):
         if not self.y_dim:
-            # project `z` and reshape
-            #self.z_, self.h0_w, self.h0_b = linear(z, self.gf_dim*8*4*4, 'g_h0_lin', with_w=True)
-
-            #self.h0 = tf.reshape(self.z_, [-1, 4, 4, self.gf_dim * 8])
-            #h0 = tf.nn.relu(self.g_bn0(self.h0))
 
             h1 = conv2d(real_image,self.gf_dim*2,d_h=1,d_w=1, name='g_h1')
             h1 = tf.nn.relu(self.g_bn1(h1))
@@ -269,7 +269,7 @@ class DCGAN(object):
             h4 = tf.nn.relu(self.g_bn4(h4))
 
             h5 = conv2d(h4,3, d_h=1,d_w=1, name='g_h5')
-
+   
             return tf.nn.tanh(h5)
         else:
             yb = tf.reshape(y, [None, 1, 1, self.y_dim])
@@ -291,10 +291,6 @@ class DCGAN(object):
         tf.get_variable_scope().reuse_variables()
 
         if not self.y_dim:
-            # project `z` and reshape
-            #h0 = tf.reshape(linear(z, self.gf_dim*8*4*4, 'g_h0_lin'),
-            #                [-1, 4, 4, self.gf_dim * 8])
-            #h0 = tf.nn.relu(self.g_bn0(h0, train=False))
 
             h1 = conv2d(images,self.gf_dim*2,d_h=1,d_w=1, name='g_h1')
             h1 = tf.nn.relu(self.g_bn1(h1, train=False))
@@ -352,3 +348,5 @@ class DCGAN(object):
             return True
         else:
             return False
+
+             

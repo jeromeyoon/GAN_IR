@@ -2,12 +2,13 @@ import os
 import random
 import numpy as np
 import tensorflow as tf
-from time import gmtime, strftime
+import time 
 import json
 from model import DCGAN
+from test import EVAL
 from utils import pp, save_images, to_json, make_gif, merge, imread, get_image
 import scipy.misc
-
+from numpy import inf
 flags = tf.app.flags
 flags.DEFINE_integer("epoch", 1000, "Epoch to train [25]")
 flags.DEFINE_float("learning_rate", 0.0002, "Learning rate of for adam [0.0002]")
@@ -31,66 +32,102 @@ def main(_):
         os.makedirs(FLAGS.checkpoint_dir)
     if not os.path.exists(FLAGS.sample_dir):
         os.makedirs(FLAGS.sample_dir)
-    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.7)
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.5)
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
-
-        dcgan = DCGAN(sess, image_size=FLAGS.image_size, batch_size=FLAGS.batch_size, input_size=FLAGS.input_size,
+        if FLAGS.is_train:
+            dcgan = DCGAN(sess, image_size=FLAGS.image_size, batch_size=FLAGS.batch_size, input_size=FLAGS.input_size,
                       dataset_name=FLAGS.dataset,
                       is_crop=FLAGS.is_crop, checkpoint_dir=FLAGS.checkpoint_dir)
+        else:
+   
+            dcgan = EVAL(sess, input_size = 600, batch_size=1,ir_image_shape=[600,800,1],normal_image_shape=[600,800,3],dataset_name=FLAGS.dataset,\
+                      is_crop=False, checkpoint_dir=FLAGS.checkpoint_dir)
 
         if FLAGS.is_train:
             dcgan.train(FLAGS)
         else:
             dcgan.load(FLAGS.checkpoint_dir)
-            OPTION = 2
+            OPTION = 2 # for validation
+            list_val = [11,16,21,22,33,36,38,53,59,92]
             VAL_OPTION =2
+            """
             if OPTION == 1:
-                data = json.load(open("/home/yjyoon/work/IRnormal/data/traininput_material.json"))
-                data_label = json.load(open("/home/yjyoon/work/IRnormal/data/traingt_material.json"))
-                """
-                data= glob.glob('research1/db/IR_normal_small/save010/1')
-                im1 = scipy.misc.imread(data[0])
-                im2 = scipy.misc.imread(data[1])
-                im3 = scipy.misc.imread(data[2])
-                im = np.dstack(im1,im2,im3)
-                """
+                data = json.load(open("/research2/IR_normal_small/json/traininput_single_224_ori_small.json"))
+                data_label = json.load(open("/research2/IR_normal_small/json/traingt_single_224_ori_small.json"))
+            
             elif OPTION == 2:
-                data = json.load(open("/home/yjyoon/work/IRnormal/data/testinput_material.json"))
-                data_label = json.load(open("/home/yjyoon/work/IRnormal/data/testgt_material.json"))
+                data = json.load(open("/research2/IR_normal_small/json/testinput_single_224_ori_small.json"))
+                data_label = json.load(open("/research2/IR_normal_small/json/testgt_single_224_ori_small.json"))
+            """
             if VAL_OPTION ==1:
-                print("Computing 32 validation set ")
-                shuffle = np.random.permutation(range(len(data)))
-                ir_batch = [get_image(data[shuffle[idx]], 0, 64, 64, is_crop=FLAGS.is_crop) for idx in xrange(FLAGS.batch_size)]
-                normal_batchlabel = [get_image(data_label[shuffle[idx]], 0, 64, 64, is_crop=FLAGS.is_crop) for idx in xrange(FLAGS.batch_size)]
-                eval_batch_images = np.array(ir_batch).astype(np.float32)
-                eval_batchlabel_images = np.array(normal_batchlabel).astype(np.float32)
-                samples = sess.run(dcgan.sampler, feed_dict={dcgan.ir_images: eval_batch_images})
-                h = eval_batch_images.shape[1]
-                w = eval_batch_images.shape[2]
+                list_val = [11,16,21,22,33,36,38,53,59,92]
+                for idx in range(len(list_val)):
+                    for idx2 in range(1,10): 
+                        print("Selected material %03d/%d" % (list_val[idx],idx2))
+                        img = '/research2/IR_normal_small/save%03d/%d' % (list_val[idx],idx2)
+                        input_ = scipy.misc.imread(img+'/3.bmp').astype(float)
+                        gt_ = scipy.misc.imread('/research2/IR_normal_small/save016/1/12_Normal.bmp').astype(float)
+                        input_ = scipy.misc.imresize(input_,[600,800])
+                        gt_ = scipy.misc.imresize(gt_,[600,800])
+                        #input_ = input_[240:840,515:1315]
+                        #gt_ = gt_[240:840,515:1315]
+                        input_ = np.reshape(input_,(1,600,800,1)) 
+                        gt_ = np.reshape(gt_,(1,600,800,3)) 
+                        input_ = np.array(input_).astype(np.float32)
+                        gt_ = np.array(gt_).astype(np.float32)
+                        start_time = time.time() 
+                        sample = sess.run(dcgan.sampler, feed_dict={dcgan.ir_images: input_})
+                        print('time: %.8f' %(time.time()-start_time))     
+                        # normalization #
+                        sample = np.squeeze(sample).astype(np.float32)
+                        gt_ = np.squeeze(gt_).astype(np.float32)
 
-                img = np.zeros((h, w * 2, 3))
-                for idx in xrange(FLAGS.batch_size):
-                    predict = samples[idx, :, :, :]
-                    gt = eval_batchlabel_images[idx, :, :, :]
-                    print('error:', sess.run(tf.reduce_sum(tf.abs(tf.sub(predict, gt)))))
-                    img[0:h, 0:w, :] = predict
-                    img[0:h, w:2 * w, :] = gt
-                    scipy.misc.imshow(img)
+                        output = np.zeros((600,800,3)).astype(np.float32)
+                        output[:,:,0] = sample[:,:,0]/(np.sqrt(np.power(sample[:,:,0],2) + np.power(sample[:,:,1],2) + np.power(sample[:,:,2],2)))
+                        output[:,:,1] = sample[:,:,1]/(np.sqrt(np.power(sample[:,:,0],2) + np.power(sample[:,:,1],2) + np.power(sample[:,:,2],2)))
+                        output[:,:,2] = sample[:,:,2]/(np.sqrt(np.power(sample[:,:,0],2) + np.power(sample[:,:,1],2) + np.power(sample[:,:,2],2)))
+   
+                        output[output ==inf] = 0.0
+                        sample = (output+1.)/2.
+                        savename = '/home/yjyoon/Dropbox/ECCV16_IRNormal/single_result/%03d/%d/single_normal_L2ang.bmp' % (list_val[idx],idx2)
+
+                        scipy.misc.imsave(savename, sample)
+
+            
             elif VAL_OPTION ==2:
                 print("Computing all validation set ")
                 ErrG =0.0
-                val_batch_idxs = min(len(data), FLAGS.train_size)/FLAGS.batch_size
-                for idx in xrange(0, val_batch_idxs):
-                    print("[Computing Validation Error %d/%d]" % (idx, val_batch_idxs))
-                    batch_files = range(idx*FLAGS.batch_size,(idx+1)*FLAGS.batch_size)
+		num_img =13
+                for idx in xrange(5, num_img+1):
+                    print("[Computing Validation Error %d/%d]" % (idx, num_img))
+                    img = '/home/yjyoon/Dropbox/ECCV16_IRNormal/extra/extra_%d.bmp' % (idx)
+                    input_ = scipy.misc.imread(img).astype(float)
+                    input_ = input_[:,:,0]
+                    gt_ = scipy.misc.imread('/research2/IR_normal_small/save016/1/12_Normal.bmp').astype(float)
+                    input_ = scipy.misc.imresize(input_,[600,800])
+                    gt_ = scipy.misc.imresize(gt_,[600,800])
+                    input_ = np.reshape(input_,(1,600,800,1)) 
+                    gt_ = np.reshape(gt_,(1,600,800,3)) 
+                    input_ = np.array(input_).astype(np.float32)
+                    gt_ = np.array(gt_).astype(np.float32)
+                    start_time = time.time() 
+                    sample = sess.run(dcgan.sampler, feed_dict={dcgan.ir_images: input_})
+                    print('time: %.8f' %(time.time()-start_time))     
+                    # normalization #
+                    sample = np.squeeze(sample).astype(np.float32)
+                    gt_ = np.squeeze(gt_).astype(np.float32)
 
-                    ir_batch = [get_image(data[idx], 0, 64, 64, is_crop=FLAGS.is_crop) for idx in batch_files]
-                    normal_batchlabel = [get_image(data_label[idx], 0, 64, 64, is_crop=FLAGS.is_crop) for idx in batch_files]
-                    eval_batch_images = np.array(ir_batch).astype(np.float32)
-                    eval_batchlabel_images = np.array(normal_batchlabel).astype(np.float32)
-                    samples = sess.run(dcgan.sampler, feed_dict={dcgan.ir_images: eval_batch_images})
-                    ErrG += sess.run(tf.reduce_mean(tf.abs(tf.sub(samples, eval_batchlabel_images))))
-                print("Validation Error:", ErrG/val_batch_idxs)
+                    output = np.zeros((600,800,3)).astype(np.float32)
+                    output[:,:,0] = sample[:,:,0]/(np.sqrt(np.power(sample[:,:,0],2) + np.power(sample[:,:,1],2) + np.power(sample[:,:,2],2)))
+                    output[:,:,1] = sample[:,:,1]/(np.sqrt(np.power(sample[:,:,0],2) + np.power(sample[:,:,1],2) + np.power(sample[:,:,2],2)))
+                    output[:,:,2] = sample[:,:,2]/(np.sqrt(np.power(sample[:,:,0],2) + np.power(sample[:,:,1],2) + np.power(sample[:,:,2],2)))
+   
+                    output[output ==inf] = 0.0
+                    sample = (output+1.)/2.
+                    savename = '/home/yjyoon/Dropbox/ECCV16_IRNormal/extra/extra_result%d.bmp' % (idx)
+
+                    scipy.misc.imsave(savename, sample)
+
 
 if __name__ == '__main__':
     tf.app.run()

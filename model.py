@@ -7,7 +7,7 @@ import tensorflow as tf
 from ops import *
 from utils import *
 from compute_ei import *
-
+from normal import norm_
 class DCGAN(object):
     def __init__(self, sess, image_size=108, is_crop=True,
                  batch_size=32, input_size=64, sample_size=32, ir_image_shape=[64, 64,1], normal_image_shape=[64, 64, 3],
@@ -45,18 +45,19 @@ class DCGAN(object):
 
         self.gfc_dim = gfc_dim
         self.dfc_dim = dfc_dim
-
-        self.lambda1 = 1
-        self.lambda2 = 1
-
+      
+        self.lambda_ang = 1.0
+        self.lambda_g = 1.0
+        self.lambda_l2 = 1.0
+        self.lambda_ei = 0.0
         self.c_dim = 3
-
+        """
         if input_size != ir_image_shape[0]:
             ir_image_shape[0] = input_size
             ir_image_shape[1] = input_size
             normal_image_shape[0] = input_size
             normal_image_shape[1] = input_size
-
+        """
         # batch normalization : deals with poor initialization helps gradient flow
         self.d_bn1 = batch_norm(batch_size, name='d_bn1')
         self.d_bn2 = batch_norm(batch_size, name='d_bn2')
@@ -69,6 +70,8 @@ class DCGAN(object):
         self.g_bn2 = batch_norm(batch_size, name='g_bn2')
         self.g_bn3 = batch_norm(batch_size, name='g_bn3')
         self.g_bn4 = batch_norm(batch_size, name='g_bn4')
+        self.g_bn5 = batch_norm(batch_size, name='g_bn5')
+        self.g_bn6 = batch_norm(batch_size, name='g_bn6')
 
         if not self.y_dim:
             self.g_bn3 = batch_norm(batch_size, name='g_bn3')
@@ -101,15 +104,23 @@ class DCGAN(object):
 
         self.d_loss_real = binary_cross_entropy_with_logits(tf.ones_like(self.D), self.D)
         self.d_loss_fake = binary_cross_entropy_with_logits(tf.zeros_like(self.D_), self.D_)
-        self.L1_loss = tf.reduce_sum(tf.abs(tf.sub(self.G,self.normal_images)))/self.batch_size * self.lambda2
+        self.ang_loss = tf.py_func(norm_,[self.G,self.normal_images],[tf.float64])
+        self.ang_loss  = tf.to_float(self.ang_loss[0],name='ToFloat')
+        self.L2_loss = tf.reduce_sum(tf.pow(tf.sub(self.G,self.normal_images),2))/(2 * self.batch_size)
         self.EI_loss = tf.py_func(compute_ei,[self.G],[tf.float64])
         self.EI_loss = tf.to_float(self.EI_loss[0],name='ToFloat')
-        self.g_loss = binary_cross_entropy_with_logits(tf.ones_like(self.D_), self.D_)*self.lambda1 + self.L1_loss + tf.abs(self.EI_loss)
+        self.g_loss = binary_cross_entropy_with_logits(tf.ones_like(self.D_), self.D_)
+        self.gen_loss = self.g_loss * self.lambda_g + self.L2_loss * self.lambda_l2 + self.EI_loss * self.lambda_ei
 
+        self.g_loss_sum = tf.scalar_summary("g_loss", self.g_loss)
+        self.ang_loss_sum = tf.scalar_summary("ang_loss", self.ang_loss)
+        self.l2_loss_sum = tf.scalar_summary("l2_loss", self.L2_loss)
+        self.ei_loss_sum = tf.scalar_summary("ei_loss", self.EI_loss)
+        self.gen_loss_sum = tf.scalar_summary("gen_loss", self.gen_loss)
+        
         self.d_loss_real_sum = tf.scalar_summary("d_loss_real", self.d_loss_real)
         self.d_loss_fake_sum = tf.scalar_summary("d_loss_fake", self.d_loss_fake)
         self.d_loss = self.d_loss_real + self.d_loss_fake
-        self.g_loss_sum = tf.scalar_summary("g_loss", self.g_loss)
         self.d_loss_sum = tf.scalar_summary("d_loss", self.d_loss)
 
         t_vars = tf.trainable_variables()
@@ -122,25 +133,26 @@ class DCGAN(object):
     def train(self, config):
         """Train DCGAN"""
 
-        d_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
+        global_step = tf.Variable(0)
+        learning_rate = tf.train.exponential_decay(0.0002,global_step,2000,0.95,staircase=True)
+        d_optim = tf.train.AdamOptimizer(learning_rate, beta1=config.beta1) \
                           .minimize(self.d_loss, var_list=self.d_vars)
-        g_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
-                          .minimize(self.g_loss, var_list=self.g_vars)
+        g_optim = tf.train.AdamOptimizer(learning_rate, beta1=config.beta1) \
+                          .minimize(self.gen_loss, var_list=self.g_vars)
         tf.initialize_all_variables().run()
 
         self.saver = tf.train.Saver()
-        self.g_sum = tf.merge_summary([self.d__sum,
-        self.d_loss_fake_sum, self.g_loss_sum])
-        self.g_sum = tf.merge_summary([self.d__sum,self.d_loss_fake_sum, self.g_loss_sum])
+        self.g_sum = tf.merge_summary([self.d__sum,self.d_loss_fake_sum, self.g_loss_sum,self.l2_loss_sum,self.ei_loss_sum,self.ang_loss_sum])
         self.d_sum = tf.merge_summary([self.d_sum, self.d_loss_real_sum, self.d_loss_sum])
         self.writer = tf.train.SummaryWriter("./logs", self.sess.graph_def)
 
         # Evaluation
-        self.val_g_sum = tf.merge_summary([self.d__sum, self.d_loss_fake_sum, self.g_loss_sum])
+        self.val_g_sum = tf.merge_summary([self.d__sum, self.d_loss_fake_sum, self.g_loss_sum,self.l2_loss_sum,self.ei_loss_sum,self.ang_loss_sum])
         self.val_writer = tf.train.SummaryWriter("./val_logs", self.sess.graph_def)
+                
+        val_data = json.load(open("/research2/IR_normal_small/json/testinput_single_224_large.json"))
+        val_label = json.load(open("/research2/IR_normal_small/json/testgt_single_224_large.json"))
 
-        val_data = json.load(open("/home/yjyoon/work/PycharmProjects/ECCV2016/DCGAN_IR_single/testinput_single.json"))
-        val_label = json.load(open("/home/yjyoon/work/PycharmProjects/ECCV2016/DCGAN_IR_single/testgt_single.json"))
         val_datalist =[', '.join(val_data[idx]) for idx in xrange(0,len(val_data))]
         val_labellist =[', '.join(val_label[idx]) for idx in xrange(0,len(val_data))]
 
@@ -153,13 +165,11 @@ class DCGAN(object):
             print(" [!] Load failed...")
 
         # loda training and validation dataset path
-        data = json.load(open("/home/yjyoon/work/PycharmProjects/ECCV2016/DCGAN_IR_single/traininput_single.json"))
-        data_label = json.load(open("/home/yjyoon/work/PycharmProjects/ECCV2016/DCGAN_IR_single/traingt_single.json"))
+        data = json.load(open("/research2/IR_normal_small/json/traininput_single_224_large.json"))
+        data_label = json.load(open("/research2/IR_normal_small/json/traingt_single_224_large.json"))
         datalist =[', '.join(data[idx]) for idx in xrange(0,len(data))]
         labellist =[', '.join(data_label[idx]) for idx in xrange(0,len(data))]
 
-	#print('Load all images')
-	#load_all_images(data,data_label,self.batch_size,config.train_size)	
 
 
         for epoch in xrange(config.epoch):
@@ -168,13 +178,26 @@ class DCGAN(object):
             batch_idxs = min(len(data), config.train_size)/config.batch_size
             randx = np.random.randint(64,224-64)
             randy = np.random.randint(64,224-64)
+
+            errG_train = 0.0
+            errL2_train =0.0
+            errEI_train =0.0
+            errang_train =0.0
+            errsum_train =0.0
+
+            if os.path.exists('train_log.txt'):
+                train_log = open('train_log.txt','aw')
+            else:
+                train_log = open('train_log.txt','w')
+                
+    
             for idx in xrange(0, batch_idxs):
                 batch_files = shuffle[idx*config.batch_size:(idx+1)*config.batch_size]
-                ir_batch = [get_image(datalist[batch_file], self.image_size,randx,randy, is_crop=self.is_crop,gray=True)
+                ir_batch = [get_image(datalist[batch_file], self.image_size,randx,randy, is_crop=self.is_crop)
                             for batch_file in batch_files]
 
                 normal_batchlabel = [get_image(labellist[batch_file], self.image_size,randx,randy,
-                                                      is_crop=self.is_crop,gray=False) for batch_file in batch_files]
+                                                      is_crop=self.is_crop) for batch_file in batch_files]
 
                 batch_images = np.array(ir_batch).astype(np.float32)
                 batchlabel_images = np.array(normal_batchlabel).astype(np.float32)
@@ -196,33 +219,73 @@ class DCGAN(object):
                 errD_fake = self.d_loss_fake.eval({self.ir_images: batch_images})
                 errD_real = self.d_loss_real.eval({self.normal_images: batchlabel_images})
                 errG = self.g_loss.eval({self.ir_images: batch_images, self.normal_images: batchlabel_images})
+                errL2 = self.L2_loss.eval({self.ir_images: batch_images, self.normal_images: batchlabel_images})
+                errEI = self.EI_loss.eval({self.ir_images: batch_images, self.normal_images: batchlabel_images})
+                errang = self.ang_loss.eval({self.ir_images: batch_images, self.normal_images: batchlabel_images})
+                errsum  = errG * self.lambda_g + errang * self.lambda_ang + errEI * self.lambda_ei + errL2 * self.lambda_l2
+                
+                errG_train += errG/config.batch_size
+                errL2_train += errL2/config.batch_size 
+                errEI_train += errEI/config.batch_size
+                errang_train += errang/config.batch_size 
+                errsum_train += errsum/config.batch_size
+                if np.mod(counter,batch_idxs-1) ==0:
+                    train_log.write('errG: %.4f errL2: %.4f errEI: %.4f errang: %.4f errsum %.4f\n' %(errG_train, errL2_train, errEI_train, errang_train, errsum_train))
+                    train_log.close()
 
                 counter += 1
-                print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
+                print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f L2 loss: %.8f, EI loss: %.8f ang loss: %.8f, err sum:%.8f" \
                     % (epoch, idx, batch_idxs,
-                        time.time() - start_time, errD_fake+errD_real, errG))
-                if np.mod(counter, batch_idxs) == 1:
+                        time.time() - start_time, errD_fake+errD_real, errG,errL2,errEI,errang,errsum))
+                if np.mod(counter, 5000) == 1:
                     valrandx = np.random.randint(64,224-64)
                     valrandy = np.random.randint(64,224-64)
                     valshuffle = np.random.permutation(range(len(val_data)))
+                    errG_val = 0.0
+                    errL2_val =0.0
+                    errEI_val =0.0
+                    errang_val =0.0
+                    errsum_val =0.0
 
-                    batch_files = valshuffle[0:self.sample_size]
-                    ir_batch = [get_image(val_datalist[batch_file], self.image_size,valrandx,valrandy, is_crop=self.is_crop) for batch_file in batch_files]
-                    normal_batchlabel = [get_image(val_labellist[batch_file], self.image_size,valrandx,valrandy, is_crop=self.is_crop) \
+                    if os.path.exists('val_log.txt'):
+                        val_log =open('val_log.txt','aw')
+                    else:
+                        val_log=open('val_log.txt','w')
+
+                    val_batch_idxs = min(len(val_data), config.train_size)/config.batch_size
+                    val_batch_idxs = val_batch_idxs /10
+                    for idx2 in xrange(0,val_batch_idxs):
+                        batch_files = valshuffle[idx2*config.batch_size:(idx2+1)*config.batch_size]
+                        ir_batch = [get_image(val_datalist[batch_file], self.image_size,valrandx,valrandy, is_crop=self.is_crop) for batch_file in batch_files]
+                        normal_batchlabel = [get_image(val_labellist[batch_file], self.image_size,valrandx,valrandy, is_crop=self.is_crop) \
                              for batch_file in batch_files]
 
-                    val_batch_images = np.array(ir_batch).astype(np.float32)
-                    val_batchlabel_images = np.array(normal_batchlabel).astype(np.float32)
+                        val_batch_images = np.array(ir_batch).astype(np.float32)
+                        val_batchlabel_images = np.array(normal_batchlabel).astype(np.float32)
 
-                    samples, summary_str = self.sess.run([self.sampler, self.val_g_sum], feed_dict={self.ir_images: val_batch_images,
+                        samples, summary_str = self.sess.run([self.sampler, self.val_g_sum], feed_dict={self.ir_images: val_batch_images,
                                                                                  self.normal_images: val_batchlabel_images})
-                    self.val_writer.add_summary(summary_str, counter)
-                    errG = self.g_loss.eval({self.ir_images: val_batch_images, self.normal_images: val_batchlabel_images})
-                    save_images(samples, [8, 8],'./samples/train_%s_%s.png' % ( epoch, idx))
-                    save_images(val_batchlabel_images, [8, 8],'./samples/gt_%s_%s.png' % (epoch, idx))
-                    print("[Sample] g_loss: %.8f" % ( errG))
+                        self.val_writer.add_summary(summary_str, counter)
+                        errG = self.g_loss.eval({self.ir_images: val_batch_images, self.normal_images: val_batchlabel_images})
+                        errL2 = self.L2_loss.eval({self.ir_images: val_batch_images, self.normal_images: val_batchlabel_images})
+                        errEI = self.EI_loss.eval({self.ir_images: val_batch_images, self.normal_images: val_batchlabel_images})
+                        errang = self.ang_loss.eval({self.ir_images: val_batch_images, self.normal_images: val_batchlabel_images})
+                        errsum  = errG * self.lambda_g + errang * self.lambda_ang + errEI * self.lambda_ei + errL2 * self.lambda_l2
 
-                if np.mod(counter, 500) == 2:
+                        errG_val += errG/config.batch_size
+                        errL2_val += errL2/config.batch_size 
+                        errEI_val += errEI/config.batch_size
+                        errang_val += errang/config.batch_size 
+                        errsum_val += errsum/config.batch_size
+
+                        #save_images(samples, [8, 8],'./samples/train_%s_%s.png' % ( epoch, idx))
+                        #save_images(val_batch_images, [8, 8],'./samples/input_%s_%s.png' % (epoch, idx))
+                        #save_images(val_batchlabel_images, [8, 8],'./samples/gt_%s_%s.png' % (epoch, idx))
+                        print("[Sample] g_loss: %.8f L2 loss: %.8f, EI loss: %.8f ang loss: %.8f errsum: %.8f" % ( errG, errL2, errEI,errang,errsum))
+                    val_log.write('errG: %.4f errL2: %.4f errEI: %.4f errang: %.4f errsum %.4f\n' %(errG_val, errL2_val, errEI_val, errang_val, errsum_val))
+                    val_log.close()
+
+                if np.mod(counter, 1000) == 2:
                     self.save(config.checkpoint_dir, counter)
 
     def discriminator(self, image, reuse=False, y=None):
@@ -258,18 +321,24 @@ class DCGAN(object):
 
             h1 = conv2d(real_image,self.gf_dim*2,d_h=1,d_w=1, name='g_h1')
             h1 = tf.nn.relu(self.g_bn1(h1))
-
-            h2 = conv2d(h1,self.gf_dim*4, d_h=1,d_w=1, name='g_h2')
+            
+            h2 = conv2d(h1,self.gf_dim*4,d_h=1,d_w=1, name='g_h2')
             h2 = tf.nn.relu(self.g_bn2(h2))
-
-            h3 = conv2d(h2,self.gf_dim*4, d_h=1,d_w=1, name='g_h3')
+           
+            h3 = conv2d(h2,self.gf_dim*4,d_h=1,d_w=1, name='g_h3')
             h3 = tf.nn.relu(self.g_bn3(h3))
-
-            h4 = conv2d(h3, self.gf_dim*2, d_h=1,d_w=1, name='g_h4')
+            
+            h4 = conv2d(h3,self.gf_dim*2,d_h=1,d_w=1, name='g_h4')
             h4 = tf.nn.relu(self.g_bn4(h4))
-
+            """
+            h2 = bottleneck_block_letters('2',h1,1,self.gf_dim*2,self.gf_dim*4)
+            
+            h3 = bottleneck_block_letters('3',h2,1,self.gf_dim*4,self.gf_dim*8)
+            
+            h4 = bottleneck_block_letters('4',h3,1,self.gf_dim*8,self.gf_dim*4)
+            """
             h5 = conv2d(h4,3, d_h=1,d_w=1, name='g_h5')
-   
+            
             return tf.nn.tanh(h5)
         else:
             yb = tf.reshape(y, [None, 1, 1, self.y_dim])
@@ -291,21 +360,28 @@ class DCGAN(object):
         tf.get_variable_scope().reuse_variables()
 
         if not self.y_dim:
-
+            
             h1 = conv2d(images,self.gf_dim*2,d_h=1,d_w=1, name='g_h1')
-            h1 = tf.nn.relu(self.g_bn1(h1, train=False))
+            h1 = tf.nn.relu(self.g_bn1(h1,train=False))
+            
+            h2 = conv2d(h1,self.gf_dim*4,d_h=1,d_w=1, name='g_h2')
+            h2 = tf.nn.relu(self.g_bn2(h2,train=False))
+           
+            h3 = conv2d(h2,self.gf_dim*4,d_h=1,d_w=1, name='g_h3')
+            h3 = tf.nn.relu(self.g_bn3(h3,train=False))
+            
+            h4 = conv2d(h3,self.gf_dim*2,d_h=1,d_w=1, name='g_h4')
+            h4 = tf.nn.relu(self.g_bn4(h4,train=False))
 
-            h2 = conv2d(h1, self.gf_dim*4,d_h=1,d_w=1, name='g_h2')
-            h2 = tf.nn.relu(self.g_bn2(h2, train=False))
 
-            h3 = conv2d(h2,self.gf_dim*4, d_h=1,d_w=1, name='g_h3')
-            h3 = tf.nn.relu(self.g_bn3(h3))
-
-            h4 = conv2d(h3, self.gf_dim*2,d_h=1,d_w =1, name='g_h4')
-            h4 = tf.nn.relu(self.g_bn4(h4, train=False))
-
-            h5 = conv2d(h4, 3,d_h=1,d_w=1, name='g_h5')
-
+            """ 
+            h2 = bottleneck_block_letters('2',h1,1,self.gf_dim*2,self.gf_dim*4,train=False)
+            
+            h3 = bottleneck_block_letters('3',h2,1,self.gf_dim*4,self.gf_dim*8,train=False)
+            
+            h4 = bottleneck_block_letters('4',h3,1,self.gf_dim*8,self.gf_dim*4,train=False)
+            """
+            h5 = conv2d(h4,3, d_h=1,d_w=1, name='g_h5')
             return tf.nn.tanh(h5)
         else:
             yb = tf.reshape(y, [None, 1, 1, self.y_dim])

@@ -69,6 +69,52 @@ def conv2d(input_, output_dim,
 
         return conv
 
+
+def _bottleneck_block(name,input_,num_unit,output_dim1,output_dim2,train):
+    for i in range(0,num_unit):
+        ds = (i ==0)
+        if i ==0:
+            unit_name = '%sa' % name
+        else:
+            unit_name = '%s%s' % (name,i)
+        x= bottleneck_unit(unit_name, input_, output_dim1, output_dim2,train)
+    return x
+
+def bottleneck_block_letters(name,input_,num_unit,output_dim1,output_dim2,train=True):
+    return _bottleneck_block(name,input_,num_unit,output_dim1,output_dim2,train)
+
+
+def bottleneck_unit(name,input_,output_dim1,output_dim2,train):
+    in_chans = input_.get_shape()[3]
+    batch_size  = input_.get_shape()[0]
+    b1_bn = batch_norm(batch_size,name='bn%s_branch1' % name)
+    b2a_bn = batch_norm(batch_size,name='bn%s_branch2a' % name)
+    b2b_bn = batch_norm(batch_size,name='bn%s_branch2b' % name)
+    b2c_bn = batch_norm(batch_size,name='bn%s_branch2b' % name)
+
+    with tf.variable_scope('res%s' % name):
+        if in_chans == output_dim2:
+            b1 = input_
+        else:
+            with tf.variable_scope('branch1'):
+                b1 = conv2d(input_,output_dim2,d_h =1,d_w =1,name='res%s_branch1' % name)
+                b1 = b1_bn(b1,train=train)
+        with tf.variable_scope('branch2a'):
+                b2 = conv2d(input_,output_dim1,d_h =1,d_w =1,name='res%s_branch2a' % name)
+                b2 = b2a_bn(b2,train=train)
+                b2 = tf.nn.relu(b2)
+        with tf.variable_scope('branch2b'):
+                b2 = conv2d(b2,output_dim1,d_h =1,d_w =1,name='res%s_branch2b' % name)
+                b2 = b2b_bn(b2,train=train)
+                b2 = tf.nn.relu(b2)
+        with tf.variable_scope('branch2c'):
+                b2 = conv2d(b2,output_dim2,d_h =1,d_w =1,name='res%s_branch2c' % name)
+                b2 = b2c_bn(b2,train=train)
+        input_ = b1+b2 
+        return tf.nn.relu(input_)
+
+
+
 def deconv2d(input_, output_shape,
              k_h=5, k_w=5, d_h=2, d_w=2, stddev=0.02,
              name="deconv2d", with_w=False):
@@ -76,10 +122,10 @@ def deconv2d(input_, output_shape,
         # filter : [height, width, output_channels, in_channels]
         w = tf.get_variable('w', [k_h, k_h, output_shape[-1], input_.get_shape()[-1]],
                             initializer=tf.random_normal_initializer(stddev=stddev))
-        #deconv = tf.nn.conv2d_transpose(input_, w, output_shape=output_shape,
-        #                        strides=[1, d_h, d_w, 1])
-        deconv = tf.nn.deconv2d(input_, w, output_shape=output_shape,
+        deconv = tf.nn.conv2d_transpose(input_, w, output_shape=output_shape,
                                 strides=[1, d_h, d_w, 1])
+        #deconv = tf.nn.deconv2d(input_, w, output_shape=output_shape,
+        #                        strides=[1, d_h, d_w, 1])
 
         biases = tf.get_variable('biases', [output_shape[-1]], initializer=tf.constant_initializer(0.0))
         deconv = tf.reshape(tf.nn.bias_add(deconv, biases), deconv.get_shape())

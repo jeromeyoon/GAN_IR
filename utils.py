@@ -14,8 +14,19 @@ get_stddev = lambda x, k_h, k_w: 1/math.sqrt(k_w*k_h*x.get_shape()[-1])
 def get_image(image_path, image_size,randx,randy, is_crop=True):
     return transform(imread(image_path), image_size, randx,randy,is_crop)
 
+#def get_image(image_path, image_size,randx,randy, is_crop=True):
+#    tmp = imread(image_path)
+#    return np.array(tmp)/127.5 -1.
+
+def get_image_original(image_path,gray=True):
+    if gray:
+	return imread_gray(image_path)
+    else:
+	return imread_(image_path)
+
 def get_image_normal(image_path, image_size,randx,randy, is_crop=True):
-    return transform_normal(normalize(imread(image_path)), image_size, randx,randy,is_crop)
+    return np.array(normalize(imread(image_path)))
+    #return transform_normal(normalize(imread(image_path)), image_size, randx,randy,is_crop)
 #def get_image(image_path, image_size, is_crop=True):
 #    return transform(imread(image_path), image_size, is_crop)
 
@@ -23,68 +34,91 @@ def get_image_eval(image_path):
     return transform_eval(imread(image_path))
 
 #def save_images(images, size, image_path):
-#    return imsave(inverse_transform(inverse_normalize(images)), size, image_path)
+#    return imsave(inverse_normalize(images), size, image_path)
 def save_images(images, size, image_path):
     return imsave(inverse_transform(images), size, image_path)
 
-def imread(path):
-    return scipy.misc.imread(path).astype(np.float)
+def imread_gray(path):
+    return scipy.misc.imread(path,1).astype(np.float)
 
+
+def imread(path):
+    tmp = scipy.misc.imread(path).astype(np.float)
+    if tmp.shape[-1] != 3:
+       """
+       mean = 1.0
+       std = 0.05
+       tmp = tmp * np.random.normal(mean,std)
+       np.clip(tmp,0.0,255.0,out=tmp)
+       """
+       return np.reshape(tmp, (224,224,1))
+    return tmp
+       
+"""
+def imread(path,gray):
+    if gray:
+        return scipy.misc.imread(path,1).astype(np.float)
+    else:
+        return scipy.misc.imread(path).astype(np.float)
+"""
 def merge_images(images, size):
     return inverse_transform(images)
 
 def normalize(images):
     images = images/255.0 # 0~1
-    images = (images * 2.0) -1.0 # -1~1
+    images_ = (images * 2.0) -1.0 # -1~1
     z = images[:, :, -1]
     z.clip(np.exp(-100), z.max(),out=z)
-    isZero = np.where(z == np.exp(-100))
-    yy = images[:,:,0]/z
-    xx = images[:,:,1]/z
+    isZero = (z == np.exp(-100)).astype(int)
 
-    yy[isZero] = 0.0
-    xx[isZero] = 0.0
+    yy = images_[:,:,0]/z
+    yy[isZero ==1] = 0.0
+    xx = images_[:,:,1]/z
+    xx[isZero ==1] = 0.0
 
-    tmp = np.dstack((yy,xx))
-    overone = np.where(tmp >1.0)
-    lessone = np.where(tmp < -1.0)
-    tmp[overone] = 1.0
-    tmp[lessone] = -1.0
+    tmp = np.squeeze(np.dstack((yy,xx)))
     return tmp
 
 
 
 def inverse_normalize(images):
+    batchnum  = images.shape[0]
+    inv_ = np.zeros((images.shape[0],images.shape[1],images.shape[2],3)).astype(float)
+    for batch in range(batchnum):
+        y = images[batch,:,:,0]
+        x = images[batch,:,:,1]
+        z = np.ones((images.shape[1],images.shape[2])).astype(float)
+        is_zero = (x == -1).astype(int)
+        norm = np.sqrt(np.power(x,2)+np.power(y,2)+1.)
+        yy = y/norm
+        xx = x/norm
+        zz = z/norm
 
-    y = images[:,:,:,0]
-    x = images[:,:,:,1]
-    z = np.full((images.shape[0],images.shape[1],images.shape[2]),1,dtype=np.float)
-    is_zero = np.where(x == 0)
-    norm = np.sqrt(np.power(x,2)+np.power(y,2)+1.)
-    yy = y/norm
-    xx = x/norm
-    zz = z/norm
+        inv = np.dstack((yy,xx,zz))
+        inv = (inv*2.0)+1.
+        inv[is_zero ==1]= 0.0
+        inv_[batch,:,:,:] = inv      
+    return inv_
 
-    yy[is_zero]= 0.0
-    xx[is_zero]= 0.0
-    zz[is_zero]= 0.0
 
-    inv = np.stack((yy,xx,zz),axis=-1)
-
-    #print('inv shape:',inv.shape)
-    #inv = np.stack(np.stack((yy,xx,zz),axis=0))
-    return inv
 
 
 def merge(images, size):
     h, w = images.shape[1], images.shape[2]
-    img = np.zeros((h * size[0], w * size[1], 3))
+    if images.shape[-1] == 3:
+        img = np.zeros((h * size[0], w * size[1], 3))
+        for idx, image in enumerate(images):
+            i = idx % size[1]
+            j = idx / size[1]
+            img[j*h:j*h+h, i*w:i*w+w, :] = image
+    else:
+        img = np.zeros((h * size[0], w * size[1]))
+        for idx, image in enumerate(images):
+            i = idx % size[1]
+            j = idx / size[1]
+            img[j*h:j*h+h, i*w:i*w+w] = np.squeeze(image)
 
-    for idx, image in enumerate(images):
-        i = idx % size[1]
-        j = idx / size[1]
-        img[j*h:j*h+h, i*w:i*w+w, :] = image
-
+        
     return img
 
 def imsave(images, size, path):
@@ -118,10 +152,15 @@ def transform_normal(image, npx, randx,randy,is_crop=True):
         #cropped_image = center_crop(image, npx)
     else:
         cropped_image = image
+    mean = 1.0
+    std = 0.05
+    cropped_image = cropped_image * np.random.normal(mean,std)
+    max_val = np.max(cropped_image)
+    cropped_image = cropped_image /max_val
     #scipy.misc.imshow(cropped_image)
     #print('cropped image dim:',cropped_image.shape)
     #print('x:%d y:%d' % (randx,randy))
-    return np.array(cropped_image)/0.5 - 1.
+    return np.array(cropped_image)*2. -1.
 
 
 def transform(image, npx, randx,randy,is_crop=True):
@@ -131,9 +170,6 @@ def transform(image, npx, randx,randy,is_crop=True):
         #cropped_image = center_crop(image, npx)
     else:
         cropped_image = image
-    #scipy.misc.imshow(cropped_image)
-    #print('cropped image dim:',cropped_image.shape)
-    #print('x:%d y:%d' % (randx,randy))
     return np.array(cropped_image)/127.5 - 1.
 
 
@@ -220,3 +256,25 @@ def make_gif(images, fname, duration=2, true_image=False):
 
   clip = mpy.VideoClip(make_frame, duration=duration)
   clip.write_gif(fname, fps = len(images) / duration)
+
+def load_all_images(data,label,bathch_size,train_size):
+     #batch_idxs = min(len(data),train_size)/batch_size
+    num_data = len(data)
+    datalist =[', '.join(data[idx]) for idx in xrange(0,num_data)]
+    labellist =[', '.join(label[idx]) for idx in xrange(0,num_data)]
+
+    ir_batch = [get_image_original(datalist[batch_file],gray=True) for batch_file in range(len(data))]
+    normal_batchlabel = [get_image_original(labellist[batch_file],gray=False) for batch_file in range(len(data))]
+    batch_images = np.array(ir_batch).astype(np.float32)
+    batchlabel_images = np.array(normal_batchlabel).astype(np.float32)
+
+    print('ir image size',batch_images.shape)
+    print('normal size',batchlabel_images.shape)
+     
+    return batch_images, batchlabel_images
+
+
+def accos_(input_):
+    tmp  = np.arccos(input_)
+    
+    return np.sum(tmp,dtype=np.float32)
